@@ -450,7 +450,7 @@ function App() {
   return (
     <main className="min-h-screen bg-[#eef7f5] text-slate-900">
       <div className="mx-auto flex max-w-[1540px] flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
-        <header className="flex flex-col gap-4 border-b border-teal-100 pb-5 lg:flex-row lg:items-center lg:justify-between">
+        <header className="sticky top-0 z-[1000] flex flex-col gap-4 rounded-lg border border-teal-200 bg-[#d6eee9]/95 p-4 shadow-[0_12px_30px_rgba(15,118,110,0.16)] backdrop-blur lg:flex-row lg:items-center lg:justify-between">
           <div className="flex items-center gap-4">
             <div className="rounded-lg border border-teal-200 bg-white p-3 text-teal-700 shadow-sm">
               <Plane size={30} />
