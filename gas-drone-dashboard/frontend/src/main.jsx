@@ -10,7 +10,6 @@ import {
   Gauge,
   MapPinned,
   Plane,
-  Radar,
   RefreshCw,
   ShieldCheck,
   ThermometerSun,
@@ -31,7 +30,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { CircleMarker, MapContainer, Popup, TileLayer } from "react-leaflet";
+import L from "leaflet";
+import { CircleMarker, MapContainer, Popup, TileLayer, useMap } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import "./styles.css";
 
@@ -179,16 +179,6 @@ function ImportControls({ reload }) {
     reload();
   };
 
-  const generate = async () => {
-    setStatus("Generating sample missions...");
-    await fetch(`${API}/generate-samples`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ count: 10 }),
-    });
-    await scan();
-  };
-
   const upload = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -213,14 +203,6 @@ function ImportControls({ reload }) {
         title="Scan mission folder"
       >
         <RefreshCw size={18} />
-      </button>
-
-      <button
-        className="inline-flex min-h-10 items-center gap-2 rounded-md border border-teal-200 bg-teal-50 px-3 text-sm font-medium text-teal-800 shadow-sm hover:bg-teal-100"
-        onClick={generate}
-      >
-        <Radar size={18} />
-        Samples
       </button>
 
       <label className="inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-md border border-teal-200 bg-teal-50 px-3 text-sm font-medium text-teal-800 shadow-sm hover:bg-teal-100">
@@ -301,10 +283,103 @@ function SensorSelector({ value, setValue }) {
   );
 }
 
-function GasMap({ readings }) {
-  const points = readings.slice(-450);
+function HeatmapLayer({ readings }) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!readings.length) return undefined;
+
+    const canvas = L.DomUtil.create("canvas", "gas-heatmap-layer");
+    const context = canvas.getContext("2d");
+    canvas.style.position = "absolute";
+    canvas.style.pointerEvents = "none";
+    canvas.style.zIndex = "450";
+    canvas.style.opacity = "0.7";
+    canvas.style.mixBlendMode = "multiply";
+
+    map.getPanes().overlayPane.appendChild(canvas);
+
+    const maxConcentration = Math.max(...readings.map((point) => point.concentration || 0));
+    const minConcentration = Math.min(...readings.map((point) => point.concentration || 0));
+    const range = maxConcentration - minConcentration || 1;
+
+    const draw = () => {
+      const size = map.getSize();
+      const topLeft = map.containerPointToLayerPoint([0, 0]);
+
+      canvas.width = size.x;
+      canvas.height = size.y;
+      canvas.style.width = `${size.x}px`;
+      canvas.style.height = `${size.y}px`;
+
+      L.DomUtil.setPosition(canvas, topLeft);
+      context.clearRect(0, 0, size.x, size.y);
+
+      const sortedReadings = [...readings].sort((a, b) => a.concentration - b.concentration);
+
+      sortedReadings.forEach((point) => {
+        const mapPoint = map.latLngToContainerPoint([point.latitude, point.longitude]);
+        const intensity = Math.max(0.08, (point.concentration - minConcentration) / range);
+        const radius = 34 + intensity * 78;
+        const alpha = 0.06 + intensity * 0.2;
+
+        const gradient = context.createRadialGradient(
+          mapPoint.x,
+          mapPoint.y,
+          0,
+          mapPoint.x,
+          mapPoint.y,
+          radius
+        );
+
+        if (intensity > 0.72) {
+          gradient.addColorStop(0, `rgba(220, 38, 38, ${alpha})`);
+          gradient.addColorStop(0.22, `rgba(245, 158, 11, ${alpha * 0.65})`);
+          gradient.addColorStop(0.5, `rgba(250, 204, 21, ${alpha * 0.42})`);
+          gradient.addColorStop(0.78, `rgba(34, 197, 94, ${alpha * 0.2})`);
+          gradient.addColorStop(1, "rgba(34, 197, 94, 0)");
+        } else if (intensity > 0.38) {
+          gradient.addColorStop(0, `rgba(245, 158, 11, ${alpha})`);
+          gradient.addColorStop(0.4, `rgba(250, 204, 21, ${alpha * 0.46})`);
+          gradient.addColorStop(0.72, `rgba(34, 197, 94, ${alpha * 0.22})`);
+          gradient.addColorStop(1, "rgba(34, 197, 94, 0)");
+        } else {
+          gradient.addColorStop(0, `rgba(34, 197, 94, ${alpha})`);
+          gradient.addColorStop(0.58, `rgba(134, 239, 172, ${alpha * 0.28})`);
+          gradient.addColorStop(1, "rgba(34, 197, 94, 0)");
+        }
+
+        context.fillStyle = gradient;
+        context.beginPath();
+        context.arc(mapPoint.x, mapPoint.y, radius, 0, Math.PI * 2);
+        context.fill();
+      });
+    };
+
+    draw();
+
+    map.on("move", draw);
+    map.on("zoom", draw);
+    map.on("resize", draw);
+
+    return () => {
+      map.off("move", draw);
+      map.off("zoom", draw);
+      map.off("resize", draw);
+      canvas.remove();
+    };
+  }, [map, readings]);
+
+  return null;
+}
+
+function GasMap({ readings, prediction }) {
+  const points = readings.slice(-700);
   const center = points.length ? [points[0].latitude, points[0].longitude] : [12.9716, 77.5946];
-  const highest = points.reduce((top, point) => (point.concentration > (top?.concentration || 0) ? point : top), null);
+  const highest = points.reduce(
+    (top, point) => (point.concentration > (top?.concentration || 0) ? point : top),
+    null
+  );
 
   return (
     <div className="h-[420px] overflow-hidden rounded-lg border border-slate-200">
@@ -314,33 +389,32 @@ function GasMap({ readings }) {
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
-        {points.map((point, index) => {
-          const isPeak = highest && point.id === highest.id;
-          const radius = Math.max(4, Math.min(22, point.concentration / 42));
-          const color = point.risk_level === "Danger" ? "#dc2626" : point.risk_level === "Warning" ? "#d97706" : "#059669";
+        <HeatmapLayer readings={points} />
 
-          return (
-            <CircleMarker
-              key={`${point.timestamp}-${index}`}
-              center={[point.latitude, point.longitude]}
-              radius={isPeak ? radius + 5 : radius}
-              pathOptions={{
-                color,
-                fillColor: color,
-                fillOpacity: isPeak ? 0.6 : 0.28,
-                weight: isPeak ? 3 : 1,
-              }}
-            >
-              <Popup>
-                <strong>{isPeak ? "Highest point" : "Sensor reading"}</strong>
-                <br />
-                {number(point.concentration, 1)} ppm
-                <br />
-                {compactTime(point.timestamp)}
-              </Popup>
-            </CircleMarker>
-          );
-        })}
+        {highest && (
+          <CircleMarker
+            center={[highest.latitude, highest.longitude]}
+            radius={10}
+            pathOptions={{
+              color: "#991b1b",
+              fillColor: "#dc2626",
+              fillOpacity: 0.95,
+              weight: 3,
+            }}
+          >
+            <Popup>
+              <strong>Highest concentration point</strong>
+              <br />
+              Gas type: {prediction?.predicted_gas || "Not available"}
+              <br />
+              Risk: {prediction?.risk_level || highest.risk_level}
+              <br />
+              Concentration: {number(highest.concentration, 1)} ppm
+              <br />
+              Time: {compactTime(highest.timestamp)}
+            </Popup>
+          </CircleMarker>
+        )}
       </MapContainer>
     </div>
   );
@@ -416,11 +490,9 @@ function App() {
           </div>
         )}
 
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
+        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard icon={Plane} label="Missions" value={number(overview?.total_missions)} sublabel="completed imports" />
           <StatCard icon={Activity} label="Readings" value={number(overview?.total_readings)} sublabel="stored in SQLite" />
-          <StatCard icon={Gauge} label="Peak Gas" value={`${number(overview?.highest_gas_concentration, 1)} ppm`} sublabel="highest sensor value" tone="text-red-600" />
-          <StatCard icon={Wind} label="Average Gas" value={`${number(overview?.average_gas_concentration, 1)} ppm`} sublabel="mission average" tone="text-sky-600" />
           <StatCard icon={ThermometerSun} label="Latest Mission" value={compactTime(overview?.latest_mission_timestamp)} sublabel="last timestamp" tone="text-amber-600" />
 
           <div className={`rounded-lg border p-4 shadow-[0_14px_35px_rgba(15,118,110,0.08)] ${riskColor(risk)}`}>
@@ -605,8 +677,8 @@ function App() {
           </Panel>
         </section>
 
-        <Panel title="Map Visualization: Sensor Locations and Heat Zones" icon={MapPinned}>
-          <GasMap readings={chartReadings} />
+        <Panel title="Map Visualization: Continuous Gas Heat Zone" icon={MapPinned}>
+          <GasMap readings={chartReadings} prediction={prediction} />
         </Panel>
       </div>
     </main>
